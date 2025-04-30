@@ -59,7 +59,7 @@ initial_setup() {
     if [[ $yn =~ [Yy] ]]; then
         install_dependencies
     else
-        echo "You've skipped initial install. You can apply patch independently with  \"./${0##*/} repatch\""
+        echo "You've skipped initial install. You can apply patch independently with  \"${0##*/} repatch\""
     fi
 
     # Get cloning path

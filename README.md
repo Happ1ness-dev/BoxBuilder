@@ -1,5 +1,5 @@
 # BoxBuilder for Android/Termux
-"We have box64 at home"
+"We have box64 at home".
 
 A streamlined tool to build and package box64 for [MiceWine](https://github.com/KreitinnSoftware/MiceWine-Application).
 
@@ -18,7 +18,7 @@ A streamlined tool to build and package box64 for [MiceWine](https://github.com/
 ## Installation
 1. Copy the script to Termux:
    ```sh
-   curl https://github.com/Happ1ness-dev/BoxBuilder/boxbuilder -o $PREFIX/bin/boxbuilder && chmod +x $PREFIX/bin/boxbuilder
+   curl https://raw.githubusercontent.com/Happ1ness-dev/BoxBuilder/refs/heads/main/boxbuilder -o $PREFIX/bin/boxbuilder && chmod +x $PREFIX/bin/boxbuilder
    ```
 2. Run initial setup:
    ```sh
