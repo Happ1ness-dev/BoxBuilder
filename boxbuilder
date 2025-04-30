@@ -1,0 +1,242 @@
+#!/bin/bash
+
+# Global configuration variables
+CONFIG_DIR="$HOME/.config/BoxBuilder"
+CONFIG_FILE="$CONFIG_DIR/settings.conf"
+
+# Check if running on Android/Termux
+check_environment() {
+    if [ "$(uname -o)" != "Android" ]; then
+        echo "Error: This script must be run on an Android environment" >&2
+        echo "Detected OS: $(uname -o)" >&2
+        exit 1
+    fi
+}
+
+load_config() {
+    BOX64_CLONE_PATH=$(grep -oP '^BOX64_CLONE_PATH="\K[^"]*' "$CONFIG_FILE")
+    RAT_PACKAGE_PATH=$(grep -oP '^RAT_PACKAGE_PATH="\K[^"]*' "$CONFIG_FILE")
+    BB_ARGS=$(grep -oP '^BB_ARGS="\K[^"]*' "$CONFIG_FILE")
+}
+
+print_config() {
+echo "Config path: $CONFIG_FILE
+
+Config:
+BOX64_CLONE_PATH=$BOX64_CLONE_PATH
+RAT_PACKAGE_PATH=$RAT_PACKAGE_PATH
+BB_ARGS=$BB_ARGS"
+}
+
+apply_sem_patch() {
+    local SEMFILE="$PREFIX/include/sys/sem.h"
+    if [ -f "$SEMFILE" ]; then
+        echo "Patching $SEMFILE..."
+        # Comment out problematic definitions
+        sed -i 's/^#undef semctl/\/\/ &/' "$SEMFILE"
+        sed -i 's/^#define semctl libandroid_semctl/\/\/ &/' "$SEMFILE"
+        sed -i 's/^#undef semget/\/\/ &/' "$SEMFILE"
+        sed -i 's/^#define semget libandroid_semget/\/\/ &/' "$SEMFILE"
+        sed -i 's/^#undef semtimedop/\/\/ &/' "$SEMFILE"
+        sed -i 's/^#define semtimedop libandroid_semtimedop/\/\/ &/' "$SEMFILE"
+    else
+        echo "Warning: $SEMFILE not found - patching skipped"
+    fi
+}
+
+install_dependencies() {
+    apt update && apt install -y build-essential ndk-sysroot git zip
+    apply_sem_patch
+}
+
+# Initial setup if config doesn't exist
+initial_setup() {
+    echo "Running initial setup..."
+    
+    # Dependency installation
+    read -p "Install dependencies (build-essential, ndk-sysroot, git, zip) and patch sys/sem.h? [Y/n] " yn
+    yn=${yn:-Y}
+    if [[ $yn =~ [Yy] ]]; then
+        install_dependencies
+    else
+        echo "You've skipped initial install. You can apply patch independently with  \"./${0##*/} repatch\""
+    fi
+
+    # Get cloning path
+    default_path="$HOME/git-projects/box64"
+    read -e -p "Enter Box64 cloning path (default: $default_path): " clone_path
+    clone_path=${clone_path:-$default_path}
+    
+    # Get packaging path
+    default_path="/sdcard/Download"
+    read -e -p "Enter rat packaging path (default: $default_path): " package_path
+    package_path=${package_path:-$default_path}
+    
+    # Save config
+    mkdir -p "$CONFIG_DIR"
+    echo "BOX64_CLONE_PATH=\"$clone_path\"
+RAT_PACKAGE_PATH=\"$package_path\"" > "$CONFIG_FILE"
+    
+    echo -e "\nInitialization successful."
+    echo "Config path: $CONFIG_FILE"
+    echo "Box64 clone path: $clone_path"
+    echo -e "\nUse \"${0##*/} build\" to build box64"
+    echo "For any questions, contact @Happ1ness#2034 on Discord."
+}
+
+create_package() {
+    local build_dir="$1"
+    cd "$build_dir" || exit 1
+    
+    # Parse version info
+    local version_data=$(./box64 --version)
+    local version=$(echo "$version_data" | grep -oP 'v\d+\.\d+\.\d+')
+    local commit=$(echo "$version_data" | grep -oP '(?<=\s)[a-f0-9]{8}(?=\s)')
+    
+    # Create package structure
+    local pkg_dir="$build_dir/package"
+    mkdir -p "$pkg_dir/files/usr/bin" "$pkg_dir/files/etc"
+    
+    cp box64 "$pkg_dir/files/usr/bin/"
+    cp "$BOX64_CLONE_PATH/system/box64.box64rc" "$pkg_dir/files/etc/"
+    
+    # Create package header
+    echo "name=Box64
+category=Box64
+version=$version-$commit
+architecture=aarch64
+vkDriverLib=" > "$pkg_dir/pkg-header"
+    
+    # Create package
+    local rat_file="box64-${version}-${commit}-aarch64.rat"
+    (cd "$pkg_dir" && zip -qr "$rat_file" files pkg-header >&2)
+    mv "$pkg_dir/$rat_file" "$RAT_PACKAGE_PATH"
+
+    echo "$rat_file"  # Only this line outputs to stdout
+}
+
+check_repo() {
+    if [ ! -d "$BOX64_CLONE_PATH" ]; then
+        echo "Error: Repository not found at $BOX64_CLONE_PATH" >&2
+        exit 1
+    fi
+}
+
+git_pull() {
+    check_repo
+    echo "Updating Box64 repository..."
+    cd "$BOX64_CLONE_PATH" || exit 1
+    git reset --hard
+    git_checkout "main"
+    git pull
+}
+
+git_checkout() {
+    local commit="$1"
+    check_repo
+    echo "Switching commit in Box64 repository..."
+    cd "$BOX64_CLONE_PATH" || exit 1
+    git reset --hard
+    git checkout "$commit"
+}
+
+# Build command handler
+build_box64() {
+    # Clone repository if needed
+    if [ ! -d "$BOX64_CLONE_PATH" ]; then
+        echo "Cloning Box64 repository..."
+        git clone https://github.com/ptitSeb/box64.git "$BOX64_CLONE_PATH"
+    fi
+    
+    if [ -z "$BOX64_CLONE_PATH" ]; then
+        echo "Error: BOX64_CLONE_PATH must be set and non-empty. Exiting. (You should never see this.)" >&2
+        exit 1
+    fi
+    
+    # Create build directory
+    echo "Building box64..."
+    local build_dir="$BOX64_CLONE_PATH/build"
+    rm -rf "$build_dir"
+    mkdir -p "$build_dir"
+    cd "$build_dir" || exit 1
+    
+    # Build commands
+    CC="aarch64-linux-android-clang" CXX="aarch64-linux-android-clang++" \
+    CFLAGS="-D__ANDROID_API__=29 -mtune=native -march=native -mcpu=native" \
+    cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo -DANDROID=1 -DBAD_SIGNAL=1 \
+    -DARM_DYNAREC=1 -DCMAKE_EXE_LINKER_FLAGS="-L/system/lib64 -Wl,-rpath-link=/system/lib64" $BB_ARGS ..
+    
+    make -j$(nproc) || exit 1
+    
+    echo "Successfully built box64"
+    
+    # Verify build
+    if ! ./box64 --version; then
+        echo "Build verification failed!"
+        exit 1
+    fi
+
+    echo "Creating .rat package..."
+    
+    # Handle packaging
+    local rat_file=$(create_package "$build_dir")
+    
+    if [ -z "$build_dir" ]; then
+        echo "Error: build_dir must be set and non-empty. Exiting. (You should never see this.)" >&2
+        exit 1
+    fi
+
+    rm -rf "$build_dir"
+    
+    echo -e "\nBuild successful! Package saved to:"
+    echo "$RAT_PACKAGE_PATH/$rat_file"
+}
+
+# Main script flow
+check_environment
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    initial_setup
+    exit 0
+fi
+
+load_config
+
+case "$1" in
+    "build")
+        # Handle build with optional update
+        if [ "$2" == "update" ]; then
+            git_pull
+        fi
+        build_box64
+        ;;
+    "pull")
+        git_pull
+        ;;
+    "checkout")
+        git_checkout "$2"
+        ;;
+    "repatch")
+        apply_sem_patch
+        ;;
+    "config")
+        print_config
+        ;;
+    *)
+        echo -e "BoxBuilder - \"We have box64 at home\"
+        
+Usage: ${0##*/} [command]
+Commands:
+  build           - Build box64
+  build update    - Update repository and build
+  pull            - Update repository without building
+  checkout        - Switch commit in repository without building
+  repatch         - Repatch sys/sem.h, for example if you skipped it
+  config          - Print BoxBuilder config and its path
+
+\e[1;33mNote: Updating repository or switching commits will reset its files.\e[0m
+
+For any questions, contact @Happ1ness#2034 on Discord."
+        exit 1
+        ;;
+esac
